@@ -2,8 +2,8 @@
 <html>
 <head>
   <meta charset="UTF-8" />
-  <title>Generador Ambient Infinito</title>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+  <title>Generador Ambient Infinito — Con Visualizador</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.7.77/Tone.js"></script>
   <script>
     let running = false;
     let audioContext;
@@ -40,6 +40,9 @@
     function dbToLinear(db) {
       return Math.pow(10, db / 20);
     }
+
+    // Analizador para visualización (se inicializa en initAudio)
+    let analyserFFT = null;
 
     async function initAudio() {
       audioContext = Tone.context;
@@ -106,16 +109,27 @@
         envelope: { attack: 0.005, decay: 0.1, sustain: 0.05, release: 0.4 }
       }).connect(reverb);
 
-      // Volúmenes iniciales
-      synths.drone.volume.value = Tone.gainToDb(state.volumes.drone);
-      synths.pads.volume.value = Tone.gainToDb(state.volumes.pads);
-      synths.bells.volume.value = Tone.gainToDb(state.volumes.bells);
-      synths.plucks.volume.value = Tone.gainToDb(state.volumes.plucks);
-      synths.birds.volume.value = Tone.gainToDb(state.volumes.birds);
-      noises.wind.volume.value = Tone.gainToDb(state.volumes.wind);
-      noises.water.volume.value = Tone.gainToDb(state.volumes.water);
+      // Volúmenes iniciales (mantengo tu enfoque con Tone.gainToDb)
+      if (synths.drone) synths.drone.volume.value = Tone.gainToDb(state.volumes.drone);
+      if (synths.pads) synths.pads.volume.value = Tone.gainToDb(state.volumes.pads);
+      if (synths.bells) synths.bells.volume.value = Tone.gainToDb(state.volumes.bells);
+      if (synths.plucks) synths.plucks.volume.value = Tone.gainToDb(state.volumes.plucks);
+      if (synths.birds) synths.birds.volume.value = Tone.gainToDb(state.volumes.birds);
+      if (noises.wind) noises.wind.volume.value = Tone.gainToDb(state.volumes.wind);
+      if (noises.water) noises.water.volume.value = Tone.gainToDb(state.volumes.water);
       
       Tone.Master.volume.value = Tone.gainToDb(state.volumes.master);
+
+      // ---------------------------
+      // Analizador FFT para visualizador
+      // ---------------------------
+      analyserFFT = new Tone.Analyser("fft", 256);
+      // Conecto tanto la salida de reverb (efecto) como Master para tener buena referencia
+      reverb.connect(analyserFFT);
+      Tone.Master.connect(analyserFFT);
+
+      // Inicializo visualizador aquí para que esté listo cuando empieces
+      initVisualizer();
     }
 
     function playDrone() {
@@ -298,10 +312,168 @@
       document.getElementById("resetBtn").addEventListener("click", () => location.reload());
     }
 
+    // Inicialización UI
     window.addEventListener("DOMContentLoaded", () => {
       setupUI();
       document.getElementById("stopBtn").disabled = true;
     });
+
+    /* ---------------------------
+       VISUALIZADOR: Multicolor, Burbujas, Modos
+       Se integra con `analyserFFT` creado en initAudio (arriba)
+       --------------------------- */
+    let canvas, ctxVis;
+    let visMode = "rainbow"; // rainbow | bubbles | lines
+    let particles = [];
+
+    function initVisualizer() {
+      // Crear canvas en el DOM (si no existe)
+      canvas = document.getElementById("visualizer-canvas");
+      ctxVis = canvas.getContext("2d");
+
+      function resizeVis() {
+        // mantener DPR para nitidez
+        const dpr = window.devicePixelRatio || 1;
+        canvas.width = canvas.offsetWidth * dpr;
+        canvas.height = canvas.offsetHeight * dpr;
+        ctxVis.setTransform(dpr, 0, 0, dpr, 0, 0);
+      }
+      window.addEventListener("resize", resizeVis);
+      resizeVis();
+
+      // inicializar partículas para burbujas
+      particles = Array.from({length: 40}, (_, i) => ({
+        x: Math.random(),
+        y: Math.random(),
+        r: 2 + Math.random()*4,
+        vx: (Math.random()-0.5)*0.002,
+        vy: (Math.random()-0.5)*0.002,
+        hueOffset: Math.random()*360
+      }));
+
+      requestAnimationFrame(drawVisualizer);
+    }
+
+    // Helper color
+    function hueColor(i, alpha=1) {
+      return `hsla(${(i*7)%360}, 80%, 60%, ${alpha})`;
+    }
+
+    function drawVisualizer() {
+      requestAnimationFrame(drawVisualizer);
+      if (!analyserFFT || !ctxVis) return;
+
+      // obtener datos FFT (array de floats)
+      const fft = analyserFFT.getValue();
+      if (!fft || fft.length === 0) return;
+
+      const w = canvas.offsetWidth;
+      const h = canvas.offsetHeight;
+      ctxVis.clearRect(0, 0, w, h);
+
+      // normalizar values 0..1 (fft values suelen ser -140..0 dB)
+      const norm = fft.map(v => Math.max(0, (v + 140) / 140)); // 0..1
+
+      // calcular energía global (para burbujas)
+      const energy = norm.reduce((a,b)=>a+b,0) / norm.length;
+
+      // background sutil
+      ctxVis.fillStyle = "rgba(7,7,10,0.25)";
+      ctxVis.fillRect(0,0,w,h);
+
+      if (visMode === "rainbow") {
+        // barras arcoíris, suave
+        const barW = w / norm.length;
+        for (let i=0;i<norm.length;i++) {
+          const val = norm[i];
+          const barH = val * h * 0.7;
+          ctxVis.fillStyle = `hsl(${(i/norm.length)*360}, 80%, ${40 + val*30}%)`;
+          ctxVis.fillRect(i*barW, h - barH, barW*0.9, barH);
+        }
+      } else if (visMode === "bubbles") {
+        // burbujas reactivas al reverb: tamaño depende de energy y algunos bins
+        const baseSize = 6 + energy * 60;
+        for (let i=0;i<particles.length;i++) {
+          const p = particles[i];
+          // mover con velocidad influida por energy y densidad
+          p.x += p.vx * (1 + energy*6) * (1 + state.density/100);
+          p.y += p.vy * (1 + energy*6) * (1 + state.density/100);
+
+          if (p.x < 0) p.x = 1;
+          if (p.x > 1) p.x = 0;
+          if (p.y < 0) p.y = 1;
+          if (p.y > 1) p.y = 0;
+
+          // tamaño modulado por una banda del spectrum
+          const bandIdx = Math.floor((i / particles.length) * norm.length);
+          const bandVal = norm[bandIdx] || 0;
+          const r = baseSize * (0.6 + bandVal*1.6) * (0.5 + Math.random()*0.5);
+
+          const px = p.x * w;
+          const py = p.y * h;
+
+          // glow: dibujamos varios círculos con alpha decreciente
+          for (let g = 4; g >= 0; g--) {
+            ctxVis.beginPath();
+            const alpha = 0.06 * (5 - g) * (0.8 + bandVal*0.8);
+            ctxVis.fillStyle = `hsla(${(p.hueOffset + i*5)%360}, 75%, 60%, ${alpha})`;
+            ctxVis.arc(px, py, r * (1 + g*0.4), 0, Math.PI*2);
+            ctxVis.fill();
+          }
+        }
+      } else if (visMode === "lines") {
+        // onda suave usando waveform approximation (convert FFT -> pseudo waveform)
+        ctxVis.lineWidth = 2;
+        ctxVis.beginPath();
+        for (let i=0;i<norm.length;i++) {
+          const x = (i/(norm.length-1))*w;
+          // crear una "onda" vertical a partir de fft value
+          const y = h/2 + (norm[i]-0.5) * h * 0.9;
+          if (i===0) ctxVis.moveTo(x,y);
+          else ctxVis.lineTo(x,y);
+        }
+        // gradiente en stroke
+        const grad = ctxVis.createLinearGradient(0,0,w,0);
+        grad.addColorStop(0, "rgba(110,231,183,0.9)");
+        grad.addColorStop(0.5, "rgba(59,130,246,0.9)");
+        grad.addColorStop(1, "rgba(236,72,153,0.9)");
+        ctxVis.strokeStyle = grad;
+        ctxVis.stroke();
+
+        // partículas de energía que siguen picos
+        for (let i=0;i<20;i++) {
+          const idx = Math.floor((i/20) * norm.length);
+          const v = norm[idx];
+          const px = (idx / norm.length) * w;
+          const py = h/2 + (v-0.5)*h*0.9;
+          ctxVis.beginPath();
+          ctxVis.fillStyle = `hsla(${(i*18)%360}, 80%, 60%, ${0.6*v})`;
+          ctxVis.arc(px, py, 2 + v*6, 0, Math.PI*2);
+          ctxVis.fill();
+        }
+      }
+
+      // small overlay text (modo + energy)
+      ctxVis.fillStyle = "rgba(255,255,255,0.06)";
+      ctxVis.font = "12px system-ui, sans-serif";
+      ctxVis.fillText(`Modo: ${visMode}    Energía: ${energy.toFixed(3)}`, 12, 16);
+    }
+
+    // Exponer cambio de modo desde el selector de la UI
+    function setVisMode(m) {
+      visMode = m;
+      // reiniciar partículas si se vuelve a bubbles
+      if (visMode === "bubbles" && particles.length === 0) {
+        particles = Array.from({length: 40}, (_, i) => ({
+          x: Math.random(),
+          y: Math.random(),
+          r: 2 + Math.random()*4,
+          vx: (Math.random()-0.5)*0.002,
+          vy: (Math.random()-0.5)*0.002,
+          hueOffset: Math.random()*360
+        }));
+      }
+    }
   </script>
 
   <style>
@@ -462,6 +634,30 @@
       text-align: center;
     }
 
+    /* Visualizer container */
+    #visualizer-wrap {
+      margin-top: 24px;
+      background: rgba(255,255,255,0.02);
+      border: 1px solid rgba(255,255,255,0.05);
+      border-radius: 12px;
+      padding: 14px;
+    }
+    #visualizer-canvas {
+      width: 100%;
+      height: 260px;
+      display: block;
+      border-radius: 10px;
+      background: linear-gradient(180deg, rgba(7,10,15,0.6), rgba(7,10,15,0.2));
+    }
+
+    .vis-controls {
+      display:flex;
+      gap:10px;
+      align-items:center;
+      justify-content:flex-end;
+      margin-bottom:10px;
+    }
+
     @media (max-width: 768px) {
       .controls { 
         grid-template-columns: 1fr; 
@@ -479,8 +675,7 @@
 <body>
   <header>
     <div>
-      <h1>🌌 Generador Ambient Infinito</h1>
-      <p class="lead">Música generativa estilo Brian Eno con sonidos de naturaleza</p>
+      <h1>🌌 Brian Eno es mi Pastor</h1>
     </div>
     <div class="big-actions">
       <button id="playBtn" class="main">▶ Iniciar</button>
@@ -579,8 +774,35 @@
     </div>
   </section>
 
+  <!-- VISUALIZER SECTION (integrado) -->
+  <section id="visualizer-wrap">
+    <div class="vis-controls">
+      <div style="flex:1;"></div>
+      <label style="color:var(--muted);">Modo:</label>
+      <select id="vis-select" style="padding:6px; border-radius:6px;">
+        <option value="rainbow">🌈 Multicolor</option>
+        <option value="bubbles">🫧 Burbujas (reverb)</option>
+        <option value="lines">⚡ Líneas</option>
+      </select>
+    </div>
+    <canvas id="visualizer-canvas"></canvas>
+  </section>
+
   <footer>
-    <p>💫 Creado para Naldi — Generador Ambient Infinito</p>
+    <p>💫Generador Ambient Infinito</p>
   </footer>
+
+  <script>
+    // Conectar selector UI con la función setVisMode definida arriba
+    document.getElementById("vis-select").addEventListener("change", (e) => {
+      setVisMode(e.target.value);
+    });
+
+    // Asegurar que canvas tenga tamaño correcto en load
+    window.addEventListener("load", () => {
+      const cvs = document.getElementById("visualizer-canvas");
+      // dar un tamaño base via CSS ya fijado; initVisualizer se encargará del DPR/resizing
+    });
+  </script>
 </body>
 </html>
