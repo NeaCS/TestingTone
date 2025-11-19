@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Generador Ambient Infinito — Controles Completos</title>
+  <script type="module">
+    import * as Tone from "https://cdn.jsdelivr.net/npm/tone@14.7.77/build/Tone.js";
+
+    // ----------------- CONFIG / ESTADO -----------------
+    let running = false;
+    const timeouts = new Set();
+
+    // Estado de control por defecto
+    const state = {
+      // Volúmenes (dB)
+      volumes: {
+        drone: -6,
+        pads: -10,
+        bells: -12,
+        plucks: -14,
+        wind: -20,
+        water: -18,
+        birds: -22,
+        master: 0
+      },
+      // Reverb
+      reverbWet: 0.9,
+      reverbDecay: 14,
+      // Tempo
+      bpm: 55,
+      // Densidad (0..100) -> converted to multiplier
+      density: 50,
+      // Probabilidades (0..100)
+      probPluck: 30,
+      probBirds: 20,
+      // Brillo y filtro
+      padBrightness: 40, // 0..100
+      globalLowpass: 20000 // Hz
+    };
+
+    // ----------------- AUDIO NODES -----------------
+    // Master volume node (in dB)
+    const masterVol = new Tone.Volume(state.volumes.master).toDestination();
+
+    // Global filter (lowpass) before reverb
+    const globalFilter = new Tone.Filter({
+      type: "lowpass",
+      frequency: state.globalLowpass,
+      rolloff: -12
+    });
+
+    // Reverb node
+    const spaceReverb = new Tone.Reverb({
+      decay: state.reverbDecay,
+      preDelay: 0.3,
+      wet: state.reverbWet
+    });
+
+    // Chain: source -> globalFilter -> reverb -> masterVol -> destination
+    globalFilter.connect(spaceReverb);
+    spaceReverb.connect(masterVol);
+
+    // Individual volume controls (Tone.Volume works in dB)
+    const volDrone = new Tone.Volume(state.volumes.drone).connect(globalFilter);
+    const volPads = new Tone.Volume(state.volumes.pads).connect(globalFilter);
+    const volBells = new Tone.Volume(state.volumes.bells).connect(globalFilter);
+    const volPlucks = new Tone.Volume(state.volumes.plucks).connect(globalFilter);
+    const volWind = new Tone.Volume(state.volumes.wind).connect(globalFilter);
+    const volWater = new Tone.Volume(state.volumes.water).connect(globalFilter);
+    const volBirds = new Tone.Volume(state.volumes.birds).connect(globalFilter);
+
+    // ----------------- SYNTHS / PLAYERS -----------------
+    // Drone: continuous oscillator with envelope-like fade (we use synth triggerAttack)
+    const droneSynth = new Tone.Synth({
+      oscillator: { type: "sine" },
+      envelope: { attack: 6, release: 12 }
+    }).connect(volDrone);
+
+    // Pads: poly synth
+    const padSynth = new Tone.PolySynth(Tone.Synth, {
+      oscillator: { type: "sine" },
+      envelope: { attack: 6, release: 8 }
+    }).connect(volPads);
+
+    // Bells
+    const bellSynth = new Tone.Synth({
+      oscillator: { type: "triangle" },
+      envelope: { attack: 0.5, release: 4 }
+    }).connect(volBells);
+
+    // Plucks
+    const pluckSynth = new Tone.Synth({
+      oscillator: { type: "sine" },
+      envelope: { attack: 0.12, decay: 0.6, sustain: 0.1, release: 1.5 }
+    }).connect(volPlucks);
+
+    // Nature players (using hosted files). If links fail, reemplazá las URLs por tus muestras.
+    const windPlayer = new Tone.Player({
+      url: "https://cdn.jsdelivr.net/gh/jonbarron/ambient-nature/wind.mp3",
+      loop: true
+    }).connect(volWind);
+
+    const waterPlayer = new Tone.Player({
+      url: "https://cdn.jsdelivr.net/gh/jonbarron/ambient-nature/water.mp3",
+      loop: true
+    }).connect(volWater);
+
+    const birdsPlayer = new Tone.Player({
+      url: "https://cdn.jsdelivr.net/gh/jonbarron/ambient-nature/birds.mp3",
+      loop: false
+    }).connect(volBirds);
+
+    // ----------------- ESCALA -----------------
+    const scale = ["C3","D#3","F3","G3","A#3","C4","D#4","F4"];
+
+    // ----------------- UTIL HELPERS -----------------
+    function randFrom(arr) {
+      return arr[Math.floor(Math.random() * arr.length)];
+    }
+
+    function densityMultiplier() {
+      // density 0 -> 2.0 (sparser), density 100 -> 0.3 (dense)
+      const d = state.density / 100;
+      return 2.0 - 1.7 * d; // maps [0,1] -> [2.0,0.3]
+    }
+
+    function setStateFromSlider(id, value) {
+      // update displayed numeric value
+      const display = document.querySelector(`#${id} .value`);
+      if (display) display.textContent = value;
+    }
+
+    function scheduleTimeout(fn, ms) {
+      const id = setTimeout(() => {
+        timeouts.delete(id);
+        fn();
+      }, ms);
+      timeouts.add(id);
+      return id;
+    }
+
+    function clearAllTimeouts() {
+      for (const id of timeouts) {
+        clearTimeout(id);
+      }
+      timeouts.clear();
+    }
+
+    // ----------------- GENERATIVE FUNCTIONS -----------------
+    function startDrone() {
+      // Use triggerAttack to hold note indefinitely
+      droneSynth.triggerAttack("C2");
+    }
+
+    function stopDrone() {
+      try { droneSynth.triggerRelease("C2"); } catch (e) {}
+    }
+
+    function playRandomPad() {
+      if (!running) return;
+      // choose 1-3 notes for chord
+      const howMany = 1 + Math.floor(Math.random() * 3);
+      const notes = Array.from({length: howMany}, () => randFrom(scale));
+      // decide duration from density
+      const base = 12 * densityMultiplier(); // in seconds approx
+      const dur = `${Math.max(4, Math.round(base))}m`; // long duration
+      padSynth.triggerAttackRelease(notes, dur);
+      // schedule next
+      const nextSec = (10 + Math.random() * 10) * densityMultiplier();
+      scheduleTimeout(playRandomPad, nextSec * 1000);
+    }
+
+    function playRandomBell() {
+      if (!running) return;
+      const note = randFrom(scale);
+      bellSynth.triggerAttackRelease(note, "4n");
+      const next = (8 + Math.random() * 12) * densityMultiplier();
+      scheduleTimeout(playRandomBell, next * 1000);
+    }
+
+    function playRandomPluck() {
+      if (!running) return;
+      if (Math.random() * 100 < state.probPluck) {
+        const note = randFrom(scale);
+        pluckSynth.triggerAttackRelease(note, "8n");
+      }
+      const next = (4 + Math.random() * 6) * densityMultiplier();
+      scheduleTimeout(playRandomPluck, next * 1000);
+    }
+
+    function randomBirds() {
+      if (!running) return;
+      if (Math.random() * 100 < state.probBirds) {
+        // start birds sample
+        try { birdsPlayer.start(); } catch(e) {}
+      }
+      const next = (10 + Math.random() * 20) * densityMultiplier();
+      scheduleTimeout(randomBirds, next * 1000);
+    }
+
+    // ----------------- START / STOP -----------------
+    async function startAmbient() {
+      if (running) return;
+      await Tone.start();
+      running = true;
+      document.getElementById("playBtn").disabled = true;
+      document.getElementById("stopBtn").disabled = false;
+
+      // apply initial params
+      Tone.Transport.bpm.value = state.bpm;
+      spaceReverb.decay = state.reverbDecay;
+      spaceReverb.wet.value = state.reverbWet;
+      globalFilter.frequency.value = state.globalLowpass;
+
+      // start players
+      try { windPlayer.start(); } catch (e) {}
+      try { waterPlayer.start(); } catch (e) {}
+
+      // start synths
+      startDrone();
+      playRandomPad();
+      playRandomBell();
+      playRandomPluck();
+      randomBirds();
+      Tone.Transport.start();
+    }
+
+    function stopAmbient() {
+      if (!running) return;
+      running = false;
+      document.getElementById("playBtn").disabled = false;
+      document.getElementById("stopBtn").disabled = true;
+
+      // stop scheduled events
+      clearAllTimeouts();
+
+      // stop transport
+      try { Tone.Transport.stop(); } catch(e) {}
+
+      // stop continuous players
+      try { windPlayer.stop(); } catch(e){}
+      try { waterPlayer.stop(); } catch(e){}
+      try { birdsPlayer.stop(); } catch(e){}
+
+      // release synths
+      stopDrone();
+      // trigger release for pads/plucks/bells by retriggering release on all notes
+      // no direct API for all notes, but we can safely dispose and recreate synths to stop sounds
+      // recreate synths to reset state (keeps controls connected)
+      recreateSynths();
+    }
+
+    function recreateSynths() {
+      // disconnect current synth nodes
+      try { droneSynth.disconnect(); } catch(e){}
+      try { padSynth.disconnect(); } catch(e){}
+      try { bellSynth.disconnect(); } catch(e){}
+      try { pluckSynth.disconnect(); } catch(e){}
+
+      // recreate and reconnect
+      // Drone
+      window.droneSynth = new Tone.Synth({
+        oscillator: { type: "sine" },
+        envelope: { attack: 6, release: 12 }
+      }).connect(volDrone);
+      // Pad
+      window.padSynth = new Tone.PolySynth(Tone.Synth, {
+        oscillator: { type: padTypeFromBrightness(state.padBrightness) },
+        envelope: { attack: 6, release: 8 }
+      }).connect(volPads);
+      // Bell
+      window.bellSynth = new Tone.Synth({
+        oscillator: { type: "triangle" },
+        envelope: { attack: 0.5, release: 4 }
+      }).connect(volBells);
+      // Pluck
+      window.pluckSynth = new Tone.Synth({
+        oscillator: { type: "sine" },
+        envelope: { attack: 0.12, decay: 0.6, sustain: 0.1, release: 1.5 }
+      }).connect(volPlucks);
+    }
+
+    // ----------------- UI BINDINGS -----------------
+    function padTypeFromBrightness(v) {
+      // Map 0..100 to oscillator type choices, and optionally detune
+      if (v < 33) return "sine";
+      if (v < 66) return "triangle";
+      return "sawtooth";
+    }
+
+    function wireSlider(id, callback, initValue) {
+      const el = document.getElementById(id);
+      const range = el.querySelector("input[type=range]");
+      const num = el.querySelector(".value");
+      range.value = initValue;
+      num.textContent = initValue;
+      range.addEventListener("input", (e) => {
+        const val = Number(e.target.value);
+        num.textContent = val;
+        callback(val);
+      });
+    }
+
+    function setupUI() {
+      // Volumes (in dB)
+      wireSlider("s-drone", (v) => { state.volumes.drone = v; volDrone.volume.value = v; }, state.volumes.drone);
+      wireSlider("s-pads", (v) => { state.volumes.pads = v; volPads.volume.value = v; }, state.volumes.pads);
+      wireSlider("s-bells", (v) => { state.volumes.bells = v; volBells.volume.value = v; }, state.volumes.bells);
+      wireSlider("s-plucks", (v) => { state.volumes.plucks = v; volPlucks.volume.value = v; }, state.volumes.plucks);
+
+      wireSlider("s-wind", (v) => { state.volumes.wind = v; volWind.volume.value = v; }, state.volumes.wind);
+      wireSlider("s-water", (v) => { state.volumes.water = v; volWater.volume.value = v; }, state.volumes.water);
+      wireSlider("s-birds", (v) => { state.volumes.birds = v; volBirds.volume.value = v; }, state.volumes.birds);
+
+      wireSlider("s-master", (v) => { state.volumes.master = v; masterVol.volume.value = v; }, state.volumes.master);
+
+      // Reverb
+      wireSlider("s-reverb-wet", (v) => {
+        state.reverbWet = v / 100;
+        spaceReverb.wet.value = state.reverbWet;
+      }, Math.round(state.reverbWet * 100));
+      wireSlider("s-reverb-decay", (v) => {
+        state.reverbDecay = v;
+        spaceReverb.decay = state.reverbDecay;
+      }, state.reverbDecay);
+
+      // Tempo
+      wireSlider("s-bpm", (v) => { state.bpm = v; Tone.Transport.bpm.value = state.bpm; }, state.bpm);
+
+      // Density
+      wireSlider("s-density", (v) => { state.density = v; }, state.density);
+
+      // Probabilities
+      wireSlider("s-prob-pluck", (v) => { state.probPluck = v; }, state.probPluck);
+      wireSlider("s-prob-birds", (v) => { state.probBirds = v; }, state.probBirds);
+
+      // Brillo pad (oscillator type)
+      wireSlider("s-pad-bright", (v) => {
+        state.padBrightness = v;
+        // change oscillator type for pads (live)
+        const t = padTypeFromBrightness(v);
+        // recreate pad synth with new type while preserving volume connection
+        const old = padSynth;
+        try { old.disconnect(); } catch(e){}
+        window.padSynth = new Tone.PolySynth(Tone.Synth, {
+          oscillator: { type: t },
+          envelope: { attack: 6, release: 8 }
+        }).connect(volPads);
+      }, state.padBrightness);
+
+      // Global lowpass filter freq
+      wireSlider("s-lowpass", (v) => {
+        state.globalLowpass = v;
+        globalFilter.frequency.value = state.globalLowpass;
+      }, state.globalLowpass);
+    }
+
+    // Initialize UI after DOM loaded
+    window.addEventListener("DOMContentLoaded", () => {
+      setupUI();
+      document.getElementById("playBtn").addEventListener("click", startAmbient);
+      document.getElementById("stopBtn").addEventListener("click", stopAmbient);
+      document.getElementById("resetBtn").addEventListener("click", resetToDefaults);
+      // disable stop until running
+      document.getElementById("stopBtn").disabled = true;
+    });
+
+    function resetToDefaults() {
+      // simple full page reload to reset everything
+      location.reload();
+    }
+
+    // Expose start/stop for inline button onclick (if needed)
+    window.startAmbient = startAmbient;
+    window.stopAmbient = stopAmbient;
+
+  </script>
+
+  <style>
+    :root {
+      --bg: #07070a;
+      --panel: #0f1720;
+      --accent: #6ee7b7;
+      --muted: #9aa5b1;
+      --text: #e6eef3;
+    }
+    body {
+      margin: 0;
+      padding: 20px;
+      background: radial-gradient(circle at 10% 10%, #071123 0%, var(--bg) 40%);
+      color: var(--text);
+      font-family: Inter, Arial, sans-serif;
+    }
+
+    header {
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+
+    h1 { font-size: 20px; margin: 0; }
+    p.lead { margin: 0; color: var(--muted); font-size: 13px; }
+
+    .controls {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+      margin-top: 16px;
+    }
+
+    .panel {
+      background: rgba(255,255,255,0.03);
+      border-radius: 10px;
+      padding: 12px;
+      box-shadow: 0 6px 20px rgba(0,0,0,0.6);
+    }
+
+    .panel h3 { margin: 0 0 8px 0; font-size: 14px; color: var(--accent); }
+    .slider-row {
+      display:flex;
+      align-items:center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .slider-row label { width: 140px; font-size: 13px; color: var(--muted); }
+    .slider-row input[type=range] { flex: 1; }
+    .slider-row .value { width: 46px; text-align:right; font-family: monospace; font-size: 13px; color: var(--text); }
+
+    .big-actions {
+      margin-top: 16px;
+      display:flex;
+      gap: 10px;
+    }
+    button.main {
+      padding: 12px 18px;
+      background: linear-gradient(180deg,#16324a,#0f2330);
+      color: var(--text);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: 10px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    button.main:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    footer { margin-top: 18px; color: var(--muted); font-size: 13px; }
+
+    @media (max-width: 900px) {
+      .controls { grid-template-columns: 1fr; }
+      .slider-row label { width: 120px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>🌌 Generador Ambient Infinito — Controles Completos</h1>
+      <p class="lead">Todo separado: música, naturaleza, reverb, tempo, densidad y más — estilo Brian Eno + naturaleza</p>
+    </div>
+    <div class="big-actions">
+      <button id="playBtn" class="main">▶ Iniciar</button>
+      <button id="stopBtn" class="main">■ Detener</button>
+      <button id="resetBtn" class="main">↺ Reset</button>
+    </div>
+  </header>
+
+  <section class="controls">
+    <!-- Musical layers -->
+    <div class="panel">
+      <h3>1) Capas musicales (volúmenes dB)</h3>
+      <div id="s-drone" class="slider-row">
+        <label>Drone</label>
+        <input type="range" min="-40" max="6" step="1">
+        <div class="value"></div>
+      </div>
+      <div id="s-pads" class="slider-row">
+        <label>Pads</label>
+        <input type="range" min="-40" max="6" step="1">
+        <div class="value"></div>
+      </div>
+      <div id="s-bells" class="slider-row">
+        <label>Bells</label>
+        <input type="range" min="-40" max="6" step="1">
+        <div class="value"></div>
+      </div>
+      <div id="s-plucks" class="slider-row">
+        <label>Plucks</label>
+        <input type="range" min="-40" max="6" step="1">
+        <div class="value"></div>
+      </div>
+
+      <hr style="opacity:.06; margin: 10px 0;">
+
+      <h3>2) Naturaleza (volúmenes dB)</h3>
+      <div id="s-wind" class="slider-row">
+        <label>Viento</label>
+        <input type="range" min="-60" max="0" step="1">
+        <div class="value"></div>
+      </div>
+      <div id="s-water" class="slider-row">
+        <label>Agua</label>
+        <input type="range" min="-60" max="0" step="1">
+        <div class="value"></div>
+      </div>
+      <div id="s-birds" class="slider-row">
+        <label>Pájaros</label>
+        <input type="range" min="-60" max="0" step="1">
+        <div class="value"></div>
+      </div>
+
+      <div id="s-master" class="slider-row" style="margin-top:8px;">
+        <label>Master (dB)</label>
+        <input type="range" min="-24" max="6" step="1">
+        <div class="value"></div>
+      </div>
+    </div>
+
+    <!-- Reverb / Tempo / Filter -->
+    <div class="panel">
+      <h3>3) Ambiente / efectos</h3>
+      <div id="s-reverb-wet" class="slider-row">
+        <label>Reverb Wet (%)</label>
+        <input type="range" min="0" max="100" step="1">
+        <div class="value"></div>
+      </div>
+      <div id="s-reverb-decay" class="slider-row">
+        <label>Reverb Decay (s)</label>
+        <input type="range" min="1" max="30" step="1">
+        <div class="value"></div>
+      </div>
+      <div id="s-bpm" class="slider-row">
+        <label>BPM (velocidad)</label>
+        <input type="range" min="20" max="140" step="1">
+        <div class="value"></div>
+      </div>
+
+      <hr style="opacity:.06; margin: 10px 0;">
+
+      <h3>4) Creativos</h3>
+      <div id="s-density" class="slider-row">
+        <label>Densidad</label>
+        <input type="range" min="0" max="100" step="1">
+        <div class="value"></div>
+      </div>
+      <div id="s-prob-pluck" class="slider-row">
+        <label>Prob. Plucks (%)</label>
+        <input type="range" min="0" max="100" step="1">
+        <div class="value"></div>
+      </div>
+      <div id="s-prob-birds" class="slider-row">
+        <label>Prob. Pájaros (%)</label>
+        <input type="range" min="0" max="100" step="1">
+        <div class="value"></div>
+      </div>
+
+      <div id="s-pad-bright" class="slider-row" style="margin-top:10px;">
+        <label>Brillo del Pad</label>
+        <input type="range" min="0" max="100" step="1">
+        <div class="value"></div>
+      </div>
+
+      <div id="s-lowpass" class="slider-row">
+        <label>Filtro Lowpass (Hz)</label>
+        <input type="range" min="300" max="20000" step="100">
+        <div class="value"></div>
+      </div>
+    </div>
+
+    <!-- Info / Tips -->
+    <div class="panel">
+      <h3>Tips & Estado</h3>
+      <p style="color:var(--muted); font-size:13px;">
+        • Ajusta Master + Reverb para obtener atmósferas enormes.<br>
+        • Baja los volúmenes negativos (dB) para que no sature.<br>
+        • La densidad reduce/estira los intervalos entre eventos.<br>
+        • Si alguna muestra no carga, revisa la URL de wind/water/birds.
+      </p>
+
+      <hr style="opacity:.06; margin: 10px 0;">
+
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button class="main" onclick="startAmbient()">▶ Iniciar</button>
+        <button class="main" onclick="stopAmbient()">■ Detener</button>
+        <button class="main" onclick="resetToDefaults()">↺ Reset</button>
+      </div>
+
+      <footer>
+        <p>Creado para Naldi — Generador Ambient Infinito</p>
+      </footer>
+    </div>
+  </section>
+</body>
+</html>
